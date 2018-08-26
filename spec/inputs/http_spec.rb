@@ -242,7 +242,7 @@ describe LogStash::Inputs::Http do
         expect(event.get("message")).to eq(body)
       end
     end
-    
+
     context "when receiving a content-type with a charset" do
       subject { LogStash::Inputs::Http.new("port" => port,
                                            "additional_codecs" => { "application/json" => "plain" }) }
@@ -264,51 +264,6 @@ describe LogStash::Inputs::Http do
         it "should include the custom headers" do
           response = client.post("http://127.0.0.1:#{port}/meh", :body => "hello").call
           expect(response.headers.to_hash).to include(custom_headers)
-        end
-      end
-    end
-    describe "basic auth" do
-      user = "test"; password = "pwd"
-      subject { LogStash::Inputs::Http.new("port" => port, "user" => user, "password" => password) }
-      let(:auth_token) { Base64.strict_encode64("#{user}:#{password}") }
-      context "when client doesn't present auth token" do
-        let!(:response) { client.post("http://127.0.0.1:#{port}/meh", :body => "hi").call }
-        it "should respond with 401" do
-          expect(response.code).to eq(401)
-        end
-        it "should not generate an event" do
-          expect(logstash_queue).to be_empty
-        end
-      end
-      context "when client presents incorrect auth token" do
-        let!(:response) do
-          client.post("http://127.0.0.1:#{port}/meh",
-                      :headers => {
-                        "content-type" => "text/plain",
-                        "authorization" => "Basic meh"
-                      },
-                      :body => "hi").call
-        end
-        it "should respond with 401" do
-          expect(response.code).to eq(401)
-        end
-        it "should not generate an event" do
-          expect(logstash_queue).to be_empty
-        end
-      end
-      context "when client presents correct auth token" do
-        let!(:response) do
-          client.post("http://127.0.0.1:#{port}/meh",
-                      :headers => {
-                        "content-type" => "text/plain",
-                        "authorization" => "Basic #{auth_token}"
-                      }, :body => "hi").call
-        end
-        it "should respond with 200" do
-          expect(response.code).to eq(200)
-        end
-        it "should generate an event" do
-          expect(logstash_queue).to_not be_empty
         end
       end
     end
@@ -337,31 +292,6 @@ describe LogStash::Inputs::Http do
           response_protocol_version = response.instance_variable_get(:@response).get_protocol_version
           expect(response_protocol_version).to eq(protocol_version)
         end
-      end
-    end
-  end
-
-  context "with :ssl => false" do
-    subject { LogStash::Inputs::Http.new("port" => port, "ssl" => false) }
-    it "should not raise exception" do
-      expect { subject.register }.to_not raise_exception
-    end
-  end
-  context "with :ssl => true" do
-    context "without :ssl_certificate" do
-      subject { LogStash::Inputs::Http.new("port" => port, "ssl" => true) }
-      it "should raise exception" do
-        expect { subject.register }.to raise_exception(LogStash::ConfigurationError)
-      end
-    end
-    context "with :ssl_certificate" do
-      let(:ssl_certificate) { Stud::Temporary.file }
-      let(:ssl_key) { Stud::Temporary.file }
-      subject { LogStash::Inputs::Http.new("port" => port, "ssl" => true,
-                                           "ssl_certificate" => ssl_certificate.path,
-                                           "ssl_key" => ssl_key.path) }
-      it "should not raise exception" do
-        expect { subject.register }.to_not raise_exception
       end
     end
   end

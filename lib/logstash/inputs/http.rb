@@ -1,6 +1,7 @@
 # encoding: utf-8
 require "logstash/inputs/base"
 require "logstash/namespace"
+require "logstash/plugin_mixins/jdbc"
 require "stud/interval"
 require "logstash-input-http_jars"
 
@@ -8,7 +9,7 @@ java_import "io.netty.handler.codec.http.HttpUtil"
 
 # Using this input you can receive single or multiline events over http(s).
 # Applications can send a HTTP POST request with a body to the endpoint started by this
-# input and Logstash will convert it into an event for subsequent processing. Users 
+# input and Logstash will convert it into an event for subsequent processing. Users
 # can pass plain text, JSON, or any formatted data and use a corresponding codec with this
 # input. For Content-Type `application/json` the `json` codec is used, but for all other
 # data formats, `plain` codec is used.
@@ -16,84 +17,95 @@ java_import "io.netty.handler.codec.http.HttpUtil"
 # This input can also be used to receive webhook requests to integrate with other services
 # and applications. By taking advantage of the vast plugin ecosystem available in Logstash
 # you can trigger actionable events right from your application.
-# 
+#
 # ==== Security
 # This plugin supports standard HTTP basic authentication headers to identify the requester.
 # You can pass in an username, password combination while sending data to this input
 #
-# You can also setup SSL and send data securely over https, with an option of validating 
-# the client's certificate. Currently, the certificate setup is through 
-# https://docs.oracle.com/cd/E19509-01/820-3503/ggfen/index.html[Java Keystore 
+# You can also setup SSL and send data securely over https, with an option of validating
+# the client's certificate. Currently, the certificate setup is through
+# https://docs.oracle.com/cd/E19509-01/820-3503/ggfen/index.html[Java Keystore
 # format]
 #
-class LogStash::Inputs::Http < LogStash::Inputs::Base
-  require "logstash/inputs/http/tls"
+class LogStash::Inputs::JdbcHttp < LogStash::Inputs::Base
+  include LogStash::PluginMixins::Jdbc
 
-  config_name "http"
+  config_name "jdbchttp"
 
   # Codec used to decode the incoming data.
   # This codec will be used as a fall-back if the content-type
   # is not found in the "additional_codecs" hash
   default :codec, "plain"
 
+  ##### JDBC variables
+  # Statement to execute
+  #
+  # To use parameters, use named parameter syntax.
+  # For example:
+  #
+  # [source, ruby]
+  # -----------------------------------------------
+  # "SELECT * FROM MYTABLE WHERE id = :target_id"
+  # -----------------------------------------------
+  #
+  # here, ":target_id" is a named parameter. You can configure named parameters
+  # with the `parameters` setting.
+  config :statement, :validate => :string
+
+  # Path of file containing statement to execute
+  config :statement_filepath, :validate => :path
+
+  # Hash of query parameter, for example `{ "target_id" => "321" }`
+  config :parameters, :validate => :hash, :default => {}
+
+  # Schedule of when to periodically run statement, in Cron format
+  # for example: "* * * * *" (execute query every minute, on the minute)
+  #
+  # There is no schedule by default. If no schedule is given, then the statement is run
+  # exactly once.
+  #config :schedule, :validate => :string
+
+  # Use an incremental column value rather than a timestamp
+  config :use_column_value, :validate => :boolean, :default => false
+
+  # If tracking column value rather than timestamp, the column whose value is to be tracked
+  config :tracking_column, :validate => :string
+
+  # Type of tracking column. Currently only "numeric" and "timestamp"
+  config :tracking_column_type, :validate => ['numeric', 'timestamp'], :default => 'numeric'
+
+  # Whether the previous run state should be preserved
+  config :clean_run, :validate => :boolean, :default => false
+
+  # Whether to save state or not in last_run_metadata_path
+  config :record_last_run, :validate => :boolean, :default => true
+
+  # Whether to force the lowercasing of identifier fields
+  config :lowercase_column_names, :validate => :boolean, :default => true
+
+  # The character encoding of all columns, leave empty if the columns are already properly UTF-8
+  # encoded. Specific columns charsets using :columns_charset can override this setting.
+  config :charset, :validate => :string
+
+  # The character encoding for specific columns. This option will override the `:charset` option
+  # for the specified columns.
+  config :columns_charset, :validate => :hash, :default => {}
+
+  # Path to file with last run time
+  config :last_run_metadata_path, :validate => :string, :default => "#{ENV['HOME']}/.logstash_jdbc_last_run"
+
+  ##### HTTP variables
   # The host or ip to bind
   config :host, :validate => :string, :default => "0.0.0.0"
 
   # The TCP port to bind to
-  config :port, :validate => :number, :default => 8080
+  config :port, :validate => :number, :default => 8887
 
   # Username for basic authorization
   config :user, :validate => :string, :required => false
 
   # Password for basic authorization
   config :password, :validate => :password, :required => false
-
-  # Events are by default sent in plain text. You can
-  # enable encryption by setting `ssl` to true and configuring
-  # the `ssl_certificate` and `ssl_key` options.
-  config :ssl, :validate => :boolean, :default => false
-
-  # SSL certificate to use.
-  config :ssl_certificate, :validate => :path
-
-  # SSL key to use.
-  # NOTE: This key need to be in the PKCS8 format, you can convert it with https://www.openssl.org/docs/man1.1.0/apps/pkcs8.html[OpenSSL]
-  # for more information.
-  config :ssl_key, :validate => :path
-
-  # SSL key passphrase to use.
-  config :ssl_key_passphrase, :validate => :password
-
-  # Validate client certificates against these authorities.
-  # You can define multiple files or paths. All the certificates will
-  # be read and added to the trust store. You need to configure the `ssl_verify_mode`
-  # to `peer` or `force_peer` to enable the verification.
-  config :ssl_certificate_authorities, :validate => :array, :default => []
-
-  # By default the server doesn't do any client verification.
-  #
-  # `peer` will make the server ask the client to provide a certificate.
-  # If the client provides a certificate, it will be validated.
-  #
-  # `force_peer` will make the server ask the client to provide a certificate.
-  # If the client doesn't provide a certificate, the connection will be closed.
-  #
-  # This option needs to be used with `ssl_certificate_authorities` and a defined list of CAs.
-  config :ssl_verify_mode, :validate => ["none", "peer", "force_peer"], :default => "none"
-
-  # Time in milliseconds for an incomplete ssl handshake to timeout
-  config :ssl_handshake_timeout, :validate => :number, :default => 10000
-
-  # The minimum TLS version allowed for the encrypted connections. The value must be one of the following:
-  # 1.0 for TLS 1.0, 1.1 for TLS 1.1, 1.2 for TLS 1.2
-  config :tls_min_version, :validate => :number, :default => TLS.min.version
-
-  # The maximum TLS version allowed for the encrypted connections. The value must be the one of the following:
-  # 1.0 for TLS 1.0, 1.1 for TLS 1.1, 1.2 for TLS 1.2
-  config :tls_max_version, :validate => :number, :default => TLS.max.version
-
-  # The list of ciphers suite to use, listed by priorities.
-  config :cipher_suites, :validate => :array, :default => org.logstash.plugins.inputs.http.util.SslSimpleBuilder::DEFAULT_CIPHERS
 
   # Apply specific codecs for specific content types.
   # The default codec will be applied only after this list is checked
@@ -115,25 +127,47 @@ class LogStash::Inputs::Http < LogStash::Inputs::Base
 
   config :max_content_length, :validate => :number, :required => false, :default => 100 * 1024 * 1024
 
-  # Deprecated options
-
-  # The JKS keystore to validate the client's certificates
-  config :keystore, :validate => :path, :deprecated => "Set 'ssl_certificate' and 'ssl_key' instead."
-  config :keystore_password, :validate => :password, :deprecated => "Set 'ssl_key_passphrase' instead."
-
-  config :verify_mode, :validate => ['none', 'peer', 'force_peer'], :default => 'none',
-     :deprecated => "Set 'ssl_verify_mode' instead."
-
   public
   def register
+    #JDBC
+    @logger = self.logger
+    prepare_jdbc_connection
 
-    validate_ssl_settings!
-
-    if @user && @password then
-      token = Base64.strict_encode64("#{@user}:#{@password.value}")
-      @auth_token = "Basic #{token}"
+    if @use_column_value
+      # Raise an error if @use_column_value is true, but no @tracking_column is set
+      if @tracking_column.nil?
+        raise(LogStash::ConfigurationError, "Must set :tracking_column if :use_column_value is true.")
+      end
     end
 
+    @value_tracker = LogStash::PluginMixins::ValueTracking.build_last_value_tracker(self)
+
+    @enable_encoding = !@charset.nil? || !@columns_charset.empty?
+
+    unless @statement.nil? ^ @statement_filepath.nil?
+      raise(LogStash::ConfigurationError, "Must set either :statement or :statement_filepath. Only one may be set at a time.")
+    end
+
+    @statement = File.read(@statement_filepath) if @statement_filepath
+
+    if (@jdbc_password_filepath and @jdbc_password)
+      raise(LogStash::ConfigurationError, "Only one of :jdbc_password, :jdbc_password_filepath may be set at a time.")
+    end
+
+    @jdbc_password = LogStash::Util::Password.new(File.read(@jdbc_password_filepath).strip) if @jdbc_password_filepath
+
+    if enable_encoding?
+      encodings = @columns_charset.values
+      encodings << @charset if @charset
+
+      @converters = encodings.each_with_object({}) do |encoding, converters|
+        converter = LogStash::Util::Charset.new(encoding)
+        converter.logger = self.logger
+        converters[encoding] = converter
+      end
+    end
+
+    #HTTP
     @codecs = Hash.new
 
     @additional_codecs.each do |content_type, codec|
@@ -152,6 +186,7 @@ class LogStash::Inputs::Http < LogStash::Inputs::Base
   end
 
   def stop
+    close_jdbc_connection
     @http_server.close() rescue nil
   end
 
@@ -179,29 +214,8 @@ class LogStash::Inputs::Http < LogStash::Inputs::Base
     event.set(@request_headers_target_field, headers)
     event.set(@remote_host_target_field, remote_address)
     decorate(event)
-    @queue << event
-  end
-
-  def validate_ssl_settings!
-    if !@ssl
-      @logger.warn("SSL Certificate will not be used") if @ssl_certificate
-      @logger.warn("SSL Key will not be used") if @ssl_key
-      @logger.warn("SSL Java Key Store will not be used") if @keystore
-    elsif !(ssl_key_configured? || ssl_jks_configured?)
-      raise LogStash::ConfigurationError, "Certificate or JKS must be configured"
-    end
-
-    if @ssl && original_params.key?("verify_mode")
-      if original_params.key?("ssl_verify_mode")
-        raise LogStash::ConfigurationError, "Both 'ssl_verify_mode' and 'verify_mode' were set. Use only 'ssl_verify_mode'."
-      end
-    end
-
-    if @ssl && require_certificate_authorities? && !client_authentication?
-      raise LogStash::ConfigurationError, "Using `ssl_verify_mode` or `verify_mode` set to PEER or FORCE_PEER, requires the configuration of `ssl_certificate_authorities`"
-    elsif @ssl && !require_certificate_authorities? && client_authentication?
-      raise LogStash::ConfigurationError, "The configuration of `ssl_certificate_authorities` requires setting `ssl_verify_mode` or `verify_mode` to PEER or FORCE_PEER"
-    end
+    //add event_details from web event
+    execute_query(queue, event_details)
   end
 
   def create_http_server(message_handler)
@@ -209,64 +223,40 @@ class LogStash::Inputs::Http < LogStash::Inputs::Base
       @host, @port, message_handler, build_ssl_params(), @threads, @max_pending_requests, @max_content_length)
   end
 
-  def build_ssl_params
-    return nil unless @ssl
+  private
 
-    if @keystore && @keystore_password
-      ssl_builder = org.logstash.plugins.inputs.http.util.JksSslBuilder.new(@keystore, @keystore_password.value)
-      if original_params.key?("verify_mode")
-        if @verify_mode.upcase == "FORCE_PEER"
-          ssl_builder.setVerifyMode(org.logstash.plugins.inputs.http.util.SslBuilder::SslClientVerifyMode::FORCE_PEER)
-        elsif @verify_mode.upcase == "PEER"
-          ssl_builder.setVerifyMode(org.logstash.plugins.inputs.http.util.SslBuilder::SslClientVerifyMode::VERIFY_PEER)
+  def execute_query(queue, event_details)
+      # update default parameters
+      @parameters['sql_last_value'] = @value_tracker.value
+      execute_statement(@statement, @parameters) do |row|
+        if enable_encoding?
+          ## do the necessary conversions to string elements
+          row = Hash[row.map { |k, v| [k.to_s, convert(k, v)] }]
         end
+        event = LogStash::Event.new(row)
+        decorate(event)
+        queue << event
       end
-      return ssl_builder
+      @value_tracker.write
+  end
+
+  def enable_encoding?
+    @enable_encoding
+  end
+
+  # make sure the encoding is uniform over fields
+  def convert(column_name, value)
+    return value unless value.is_a?(String)
+    column_charset = @columns_charset[column_name]
+    if column_charset
+      converter = @converters[column_charset]
+      converter.convert(value)
+    elsif @charset
+      converter = @converters[@charset]
+      converter.convert(value)
+    else
+      value
     end
-
-    begin
-      ssl_builder = org.logstash.plugins.inputs.http.util.SslSimpleBuilder.new(@ssl_certificate, @ssl_key, @ssl_key_passphrase.nil? ? nil : @ssl_key_passphrase.value)
-      .setProtocols(convert_protocols)
-      .setCipherSuites(normalized_ciphers)
-    rescue java.lang.IllegalArgumentException => e
-      raise LogStash::ConfigurationError.new(e)
-    end
-
-    ssl_builder.setHandshakeTimeoutMilliseconds(@ssl_handshake_timeout)
-
-    if client_authentication?
-      if @ssl_verify_mode.upcase == "FORCE_PEER"
-        ssl_builder.setVerifyMode(org.logstash.plugins.inputs.http.util.SslBuilder::SslClientVerifyMode::FORCE_PEER)
-      elsif @ssl_verify_mode.upcase == "PEER"
-        ssl_builder.setVerifyMode(org.logstash.plugins.inputs.http.util.SslBuilder::SslClientVerifyMode::VERIFY_PEER)
-      end
-      ssl_builder.setCertificateAuthorities(@ssl_certificate_authorities)
-    end
-    ssl_builder
   end
 
-  def ssl_key_configured?
-    !!(@ssl_certificate && @ssl_key)
-  end
-
-  def ssl_jks_configured?
-    !!(@keystore && @keystore_password)
-  end
-
-  def client_authentication?
-    @ssl_certificate_authorities && @ssl_certificate_authorities.size > 0
-  end
-
-  def require_certificate_authorities?
-    @ssl_verify_mode == "force_peer" || @ssl_verify_mode == "peer"
-  end
-
-  def normalized_ciphers
-    @cipher_suites.map(&:upcase)
-  end
-
-  def convert_protocols
-    TLS.get_supported(@tls_min_version..@tls_max_version).map(&:name)
-  end
-
-end # class LogStash::Inputs::Http
+end # class LogStash::Inputs::JdbcHttp
